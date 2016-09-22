@@ -14,6 +14,12 @@ import java.beans.PropertyChangeListener;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
+import java.text.DateFormat;
+import java.text.SimpleDateFormat;
+import java.util.Calendar;
+import java.util.Date;
 import java.util.List;
 
 /**
@@ -65,19 +71,12 @@ public class AndroidFSPanel {
 
         int returnval = fileChooser.showDialog(mainPanel, "导入");
         if (returnval == JFileChooser.APPROVE_OPTION) {
-            try {
-                ProgressMonitor monitor = new ProgressMonitor(this.getPanel(), "导入", "正在导入", 0, fileChooser.getSelectedFiles().length);
-                monitor.setProgress(0);
-                exportAction.setEnabled(false);
-                importAction.setEnabled(false);
-                ImportTask importTask=new ImportTask(monitor,tblFS.getCurrentDir(),fileChooser.getSelectedFiles());
-                importTask.execute();
-
-            } catch (Exception e) {
-                e.printStackTrace();
-                JOptionPane.showMessageDialog(this.getPanel(), "导出失败:" + e.getMessage(), "导出失败", JOptionPane.OK_OPTION);
-            }
-            tblFS.refresh();
+            ProgressMonitor monitor = new ProgressMonitor(this.getPanel(), "导入", "正在导入", 0, fileChooser.getSelectedFiles().length);
+            monitor.setProgress(0);
+            exportAction.setEnabled(false);
+            importAction.setEnabled(false);
+            ImportTask importTask = new ImportTask(monitor, tblFS.getCurrentDir(), fileChooser.getSelectedFiles());
+            importTask.execute();
         }
     }
 
@@ -94,17 +93,12 @@ public class AndroidFSPanel {
 
         int returnval = fileChooser.showDialog(mainPanel, "导出");
         if (returnval == JFileChooser.APPROVE_OPTION) {
-            try {
-                ProgressMonitor monitor = new ProgressMonitor(this.getPanel(), "导出", "正在导出", 0, fileEntries.size());
-                monitor.setProgress(0);
-                exportAction.setEnabled(false);
-                importAction.setEnabled(false);
-                ExportTask exportTask=new ExportTask(monitor,fileChooser.getSelectedFile(),fileEntries);
-                exportTask.execute();
-            } catch (Exception e) {
-                e.printStackTrace();
-                JOptionPane.showMessageDialog(this.getPanel(), "导出失败:" + e.getMessage(), "导出失败", JOptionPane.OK_OPTION);
-            }
+            ProgressMonitor monitor = new ProgressMonitor(this.getPanel(), "导出", "正在导出", 0, fileEntries.size());
+            monitor.setProgress(0);
+            exportAction.setEnabled(false);
+            importAction.setEnabled(false);
+            ExportTask exportTask = new ExportTask(monitor, fileChooser.getSelectedFile(), fileEntries);
+            exportTask.execute();
         }
     }
 
@@ -122,11 +116,13 @@ public class AndroidFSPanel {
         treeFS.setFileListingService(fileListingService);
     }
 
-    private class ExportTask extends SwingWorker<Void,Void> {
+    private class ExportTask extends SwingWorker<Void, Void> {
         private ProgressMonitor monitor;
         private File dir;
         private List<FileEntry> fileEntries;
-        private boolean canceled=false;
+        private String currentFileName = "";
+        private boolean canceled = false;
+        private int progress = 0;
 
         public ExportTask(ProgressMonitor monitor, File dir, List<FileEntry> fileEntries) {
             this.monitor = monitor;
@@ -135,16 +131,15 @@ public class AndroidFSPanel {
             this.addPropertyChangeListener(new PropertyChangeListener() {
                 @Override
                 public void propertyChange(PropertyChangeEvent evt) {
-                    if ("progress" == evt.getPropertyName() ) {
+                    if ("progress" == evt.getPropertyName()) {
                         if (monitor.isCanceled() || isDone()) {
                             Toolkit.getDefaultToolkit().beep();
                             if (monitor.isCanceled()) {
-                                canceled=true;
+                                canceled = true;
                             }
-                        }  else {
-                            int progress = (Integer) evt.getNewValue();
+                        } else {
                             monitor.setProgress(progress);
-                            monitor.setNote("已完成"+progress+"/"+monitor.getMaximum());
+                            monitor.setNote("正在导出" + currentFileName + ".\n已完成" + progress + "/" + monitor.getMaximum());
                         }
                     }
                 }
@@ -153,26 +148,42 @@ public class AndroidFSPanel {
 
         @Override
         protected Void doInBackground() throws Exception {
-            int progess = 0;
-            for (FileEntry entry : fileEntries) {
-                if (canceled)
-                    break;
-                iDevice.pullFile(entry.getFullPath(), dir.getAbsolutePath() + File.separator + entry.getName());
-                progess++;
-                setProgress(progess);
+            try {
+                progress = 0;
+                for (FileEntry entry : fileEntries) {
+                    if (canceled)
+                        break;
+                    System.out.println(entry.getName()+" "+entry.getDate()+" "+entry.getTime());
+                    currentFileName = entry.getName();
+                    setProgress(progress % 2);
+                    iDevice.pullFile(entry.getFullPath(), dir.getAbsolutePath() + File.separator + entry.getName());
+                    File newFile= new File(dir.getAbsolutePath() + File.separator + entry.getName());
+                    DateFormat dateFormat= new SimpleDateFormat("yyyy-MM-dd HH:mm");
+                    Date fileDate=dateFormat.parse(String.format("%s %s",entry.getDate(),entry.getTime()));
+                    FileTime fileTime=FileTime.fromMillis(fileDate.getTime());
+                    Files.setLastModifiedTime(newFile.toPath(),fileTime);
+                    progress++;
+                }
+            } catch (Exception e) {
+                monitor.close();
+                e.printStackTrace();
+                JOptionPane.showMessageDialog(getPanel(), "导出失败:" + e.getMessage(), "导出失败", JOptionPane.OK_OPTION);
+            } finally {
+                exportAction.setEnabled(true);
+                importAction.setEnabled(true);
+                monitor.close();
             }
-            exportAction.setEnabled(true);
-            importAction.setEnabled(true);
-            monitor.close();
             return null;
         }
     }
 
-    private class ImportTask extends SwingWorker<Void,Void> {
+    private class ImportTask extends SwingWorker<Void, Void> {
         private ProgressMonitor monitor;
         private FileEntry dir;
         private File[] files;
-        private boolean canceled=false;
+        private boolean canceled = false;
+        private String currentFileName = "";
+        private int progress=0;
 
         public ImportTask(ProgressMonitor monitor, FileEntry dir, File[] files) {
             this.monitor = monitor;
@@ -181,16 +192,15 @@ public class AndroidFSPanel {
             this.addPropertyChangeListener(new PropertyChangeListener() {
                 @Override
                 public void propertyChange(PropertyChangeEvent evt) {
-                    if ("progress" == evt.getPropertyName() ) {
+                    if ("progress" == evt.getPropertyName()) {
                         if (monitor.isCanceled() || isDone()) {
                             Toolkit.getDefaultToolkit().beep();
                             if (monitor.isCanceled()) {
-                                canceled=true;
+                                canceled = true;
                             }
-                        }   else {
-                            int progress = (Integer) evt.getNewValue();
+                        } else {
                             monitor.setProgress(progress);
-                            monitor.setNote("已完成"+progress+"/"+monitor.getMaximum());
+                            monitor.setNote("正在导入" + currentFileName + ".\n已完成" + progress + "/" + monitor.getMaximum());
                         }
                     }
                 }
@@ -199,18 +209,27 @@ public class AndroidFSPanel {
 
         @Override
         protected Void doInBackground() throws Exception {
-            int progess=0;
-            for (File file : files) {
-                if (monitor.isCanceled()) {
-                    break;
+            try {
+                progress = 0;
+                for (File file : files) {
+                    if (monitor.isCanceled()) {
+                        break;
+                    }
+                    currentFileName = file.getName();
+                    setProgress(progress % 2);
+                    iDevice.pushFile(file.getAbsolutePath(), dir.getFullPath() + "/" + file.getName());
+                    progress++;
                 }
-                iDevice.pushFile(file.getAbsolutePath(), dir.getFullPath() + "/" + file.getName());
-                progess++;
-                monitor.setProgress(progess);
+            } catch (Exception e) {
+                monitor.close();
+                e.printStackTrace();
+                JOptionPane.showMessageDialog(getPanel(), "导出失败:" + e.getMessage(), "导出失败", JOptionPane.OK_OPTION);
+            } finally {
+                monitor.close();
+                exportAction.setEnabled(true);
+                importAction.setEnabled(true);
+                tblFS.refresh();
             }
-            monitor.close();
-            exportAction.setEnabled(true);
-            importAction.setEnabled(true);
             return null;
         }
 
